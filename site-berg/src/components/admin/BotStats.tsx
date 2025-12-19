@@ -74,12 +74,12 @@ interface SquareCloudBot {
 }
 
 interface SquareCloudStatus {
-  cpu?: number | string
-  ram?: number | string
-  status?: string
-  running?: boolean
-  storage?: number
-  network?: {
+  cpu: number
+  ram: number
+  status: string
+  running: boolean
+  storage: number
+  network: {
     total: {
       input: number
       output: number
@@ -89,8 +89,8 @@ interface SquareCloudStatus {
       output: number
     }
   }
-  uptime?: number
-  requests?: number
+  uptime: number
+  requests: number
 }
 
 interface User {
@@ -127,103 +127,38 @@ export function BotStats() {
   const loadBots = async () => {
     try {
       setIsLoading(true)
-      console.log('🔄 Iniciando carregamento de bots...')
-      
       const botSettings = await api.getBotSettings()
       if (!botSettings.squarecloudAccessToken) {
-        console.warn('⚠️ Token da SquareCloud não configurado')
         toast({
           title: 'Aviso',
           description: 'Token da SquareCloud não configurado.',
           variant: 'destructive',
         })
-        setBots([])
         return
       }
 
-      console.log('✅ Token encontrado, buscando aplicações...')
-      
       // Buscar informações de cada aplicação
       // A função getSquareCloudBots já busca IDs do localStorage e dos pedidos
       const squareCloudBots = await api.getSquareCloudBots(botSettings.squarecloudAccessToken || '')
       
-      console.log(`📦 Total de bots encontrados: ${squareCloudBots?.length || 0}`)
-      
       // Debug: verificar se os dados de assinatura estão chegando
-      if (squareCloudBots && squareCloudBots.length > 0) {
-        console.log('📋 Bots carregados:', squareCloudBots.map(bot => ({
-          name: bot.name,
-          id: bot.id,
-          subscriptionExpiryDate: bot.subscriptionExpiryDate,
-          subscriptionStartDate: bot.subscriptionStartDate
-        })))
-      } else {
-        console.warn('⚠️ Nenhum bot encontrado. Verifique se há aplicações salvas no banco de dados.')
-      }
+      console.log('Bots carregados:', squareCloudBots?.map(bot => ({
+        name: bot.name,
+        id: bot.id,
+        subscriptionExpiryDate: bot.subscriptionExpiryDate,
+        subscriptionStartDate: bot.subscriptionStartDate
+      })))
       
       setBots(squareCloudBots || [])
-      
-      if (!squareCloudBots || squareCloudBots.length === 0) {
-        console.warn('⚠️ Nenhuma aplicação encontrada. As aplicações precisam estar salvas na tabela "applications" do banco de dados.')
-      }
 
-      // Carregar status de cada bot com delay para evitar rate limiting
+      // Carregar status de cada bot
       const statuses: Record<string, SquareCloudStatus> = {}
-      const statusDelay = 800 // 800ms entre cada requisição de status
-      
-      for (let i = 0; i < (squareCloudBots || []).length; i++) {
-        const bot = squareCloudBots[i]
-        
-        // Delay entre requisições (exceto a primeira)
-        if (i > 0) {
-          await new Promise(resolve => setTimeout(resolve, statusDelay))
-        }
-        
+      for (const bot of squareCloudBots || []) {
         try {
           const status = await api.getSquareCloudBotStatus(bot.id, botSettings.squarecloudAccessToken || '')
-          console.log(`Status do bot ${bot.name} (${bot.id}):`, {
-            status,
-            cpu: status?.cpu,
-            ram: status?.ram,
-            running: status?.running,
-            statusField: status?.status,
-            rawRunning: status?.running,
-            rawStatus: status?.status
-          })
-          
-          // Garantir que o status está correto e preservar CPU e RAM
-          const normalizedStatus: SquareCloudStatus = {
-            ...status,
-            cpu: status?.cpu, // Preservar CPU (pode ser número ou string)
-            ram: status?.ram, // Preservar RAM (pode ser número ou string)
-            running: status?.running === true || status?.running === 'true' || status?.status === 'running',
-            status: (status?.running === true || status?.running === 'true' || status?.status === 'running') ? 'running' : 'stopped'
-          }
-          
-          // Debug: verificar valores de CPU e RAM
-          console.log(`Bot ${bot.name} - CPU: ${normalizedStatus.cpu} (tipo: ${typeof normalizedStatus.cpu}), RAM: ${normalizedStatus.ram} (tipo: ${typeof normalizedStatus.ram})`)
-          
-          statuses[bot.id] = normalizedStatus
-        } catch (error: any) {
+          statuses[bot.id] = status
+        } catch (error) {
           console.error(`Erro ao carregar status do bot ${bot.id}:`, error)
-          
-          // Se for erro 429, aguardar mais tempo
-          if (error.message?.includes('429') || error.message?.includes('Too Many Requests')) {
-            console.warn(`⚠️ Rate limit ao buscar status. Aguardando 3 segundos...`)
-            await new Promise(resolve => setTimeout(resolve, 3000))
-          }
-          
-          // Definir status padrão em caso de erro
-          statuses[bot.id] = {
-            cpu: 0,
-            ram: 0,
-            status: 'stopped',
-            running: false,
-            storage: 0,
-            network: { total: { input: 0, output: 0 }, now: { input: 0, output: 0 } },
-            uptime: 0,
-            requests: 0
-          }
         }
       }
       setBotStatuses(statuses)
@@ -280,51 +215,27 @@ export function BotStats() {
     }
   }
 
-  const loadBotLogs = async (botId: string, retryCount = 0) => {
+  const loadBotLogs = async (botId: string) => {
     try {
       setIsLoadingLogs(true)
-      setBotLogs('Carregando logs...')
-      
       const botSettings = await api.getBotSettings()
       if (!botSettings.squarecloudAccessToken) {
-        const errorMsg = 'Token da SquareCloud não configurado.'
-        setBotLogs(errorMsg)
         toast({
           title: 'Erro',
-          description: errorMsg,
+          description: 'Token da SquareCloud não configurado.',
           variant: 'destructive',
         })
         return
       }
 
-      console.log('Carregando logs do bot:', botId)
       const logs = await api.getSquareCloudBotLogs(botId, botSettings.squarecloudAccessToken)
-      console.log('Logs recebidos:', logs ? `${logs.length} caracteres` : 'vazio')
-      
-      if (logs && logs.trim().length > 0) {
-        setBotLogs(logs)
-      } else {
-        setBotLogs('Nenhum log disponível no momento. Os logs aparecerão quando o bot estiver rodando e gerando saída.')
-      }
+      setBotLogs(logs || 'Nenhum log disponível.')
     } catch (error: any) {
       console.error('Erro ao carregar logs:', error)
-      
-      // Se for erro 429 (Too Many Requests) e ainda tiver tentativas, aguardar e tentar novamente
-      if (error.message?.includes('429') && retryCount < 2) {
-        const waitTime = (retryCount + 1) * 2000 // 2s, 4s
-        setBotLogs(`Muitas requisições. Aguardando ${waitTime / 1000} segundos antes de tentar novamente...`)
-        
-        await new Promise(resolve => setTimeout(resolve, waitTime))
-        return loadBotLogs(botId, retryCount + 1)
-      }
-      
-      const errorMsg = error.message || 'Erro desconhecido'
-      setBotLogs(`Erro ao carregar logs: ${errorMsg}`)
+      setBotLogs(`Erro ao carregar logs: ${error.message || 'Erro desconhecido'}`)
       toast({
         title: 'Erro',
-        description: errorMsg.includes('429') 
-          ? 'Muitas requisições à API. Aguarde alguns segundos antes de tentar novamente.'
-          : errorMsg,
+        description: error.message || 'Não foi possível carregar os logs.',
         variant: 'destructive',
       })
     } finally {
@@ -372,13 +283,6 @@ export function BotStats() {
       }
     }
   }, [editingBotId, bots, orders])
-
-  // Carregar logs automaticamente quando o diálogo abrir
-  useEffect(() => {
-    if (selectedBotForLogs) {
-      loadBotLogs(selectedBotForLogs)
-    }
-  }, [selectedBotForLogs])
 
   const handleUpdateBotExpiry = async (botId: string) => {
     if (!isAdmin) {
@@ -618,13 +522,7 @@ export function BotStats() {
     bot.id.toLowerCase().includes(searchQuery.toLowerCase())
   )
 
-  const onlineBots = filteredBots.filter((bot) => {
-    const status = botStatuses[bot.id]
-    return status?.running === true || 
-           status?.running === 'true' || 
-           status?.status === 'running' ||
-           (status && typeof status.running !== 'undefined' && status.running !== false && status.running !== 'false')
-  }).length
+  const onlineBots = filteredBots.filter((bot) => botStatuses[bot.id]?.running).length
   const totalBots = filteredBots.length
 
   if (isLoading) {
@@ -742,10 +640,7 @@ export function BotStats() {
           <div className="flex justify-end">
             <Dialog open={showAppManager} onOpenChange={setShowAppManager}>
               <DialogTrigger asChild>
-                <Button 
-                  variant="outline"
-                  className="border-zinc-700 bg-transparent text-white hover:bg-zinc-800 hover:text-white hover:border-zinc-600"
-                >
+                <Button variant="outline">
                   <Settings className="w-4 h-4 mr-2" />
                   Gerenciar
                 </Button>
@@ -801,35 +696,9 @@ export function BotStats() {
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {filteredBots.map((bot) => {
           const status = botStatuses[bot.id]
-          // Verificar status de múltiplas formas para garantir detecção correta
-          const isRunning = status?.running === true || 
-                           status?.running === 'true' || 
-                           status?.status === 'running' ||
-                           (status && typeof status.running !== 'undefined' && status.running !== false && status.running !== 'false') ||
-                           false
-          
-          // A API da SquareCloud retorna CPU como string com % ou número
-          let cpuPercent = 0
-          if (status?.cpu) {
-            if (typeof status.cpu === 'string') {
-              cpuPercent = parseFloat(status.cpu.replace('%', '').trim()) || 0
-            } else {
-              cpuPercent = Number(status.cpu) || 0
-            }
-          }
-          
-          // A API da SquareCloud retorna RAM em MB (número) ou como string
-          let ramUsed = 0
-          if (status?.ram) {
-            if (typeof status.ram === 'string') {
-              // Se for string como "47.37 MB", extrair o número
-              const ramMatch = status.ram.match(/(\d+\.?\d*)/)
-              ramUsed = ramMatch ? parseFloat(ramMatch[1]) : 0
-            } else {
-              ramUsed = Number(status.ram) || 0
-            }
-          }
-          
+          const isRunning = status?.running || false
+          const cpuPercent = Number(status?.cpu) || 0
+          const ramUsed = Number(status?.ram) || 0
           const ramTotal = Number(bot.ram) || 256
           const ramPercent = ramTotal > 0 ? (ramUsed / ramTotal) * 100 : 0
           
@@ -1076,7 +945,7 @@ export function BotStats() {
                   <Button
                     size="sm"
                     variant="outline"
-                    className="flex-1 text-xs h-8 border-zinc-700 bg-transparent text-white hover:bg-zinc-800 hover:text-white hover:border-zinc-600"
+                    className="flex-1 text-xs h-8"
                     onClick={(e) => {
                       e.stopPropagation()
                       handleControlBot(bot.id, isRunning ? 'stop' : 'start')
@@ -1097,7 +966,7 @@ export function BotStats() {
                   <Button
                     size="sm"
                     variant="outline"
-                    className="flex-1 text-xs h-8 border-zinc-700 bg-transparent text-white hover:bg-blue-600/20 hover:text-blue-400 hover:border-blue-500/50 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="flex-1 text-xs h-8"
                     onClick={(e) => {
                       e.stopPropagation()
                       handleControlBot(bot.id, 'restart')
@@ -1117,7 +986,7 @@ export function BotStats() {
                       CPU
                     </span>
                     <span className="text-white font-medium">
-                      {isRunning ? (cpuPercent > 0 ? `${cpuPercent.toFixed(1)}%` : '0.0%') : '-'}
+                      {typeof cpuPercent === 'number' ? cpuPercent.toFixed(1) : '0.0'}%
                     </span>
                   </div>
                   <div className="flex items-center justify-between text-xs">
@@ -1126,28 +995,21 @@ export function BotStats() {
                       RAM
                     </span>
                     <span className="text-white font-medium">
-                      {isRunning ? `${ramUsed.toFixed(0)} MB / ${ramTotal} MB` : `0 MB / ${ramTotal} MB`}
+                      {typeof ramUsed === 'number' ? ramUsed.toFixed(0) : '0'} MB / {ramTotal} MB
                     </span>
                   </div>
-                  {isRunning && (
-                    <div className="w-full bg-zinc-800 rounded-full h-1.5">
-                      <div
-                        className={`h-1.5 rounded-full transition-all ${
-                          ramPercent > 80
-                            ? 'bg-red-500'
-                            : ramPercent > 60
-                            ? 'bg-yellow-500'
-                            : 'bg-blue-500'
-                        }`}
-                        style={{ width: `${Math.min(ramPercent, 100)}%` }}
-                      />
-                    </div>
-                  )}
-                  {!isRunning && (
-                    <div className="w-full bg-zinc-800 rounded-full h-1.5">
-                      <div className="h-1.5 rounded-full bg-zinc-700" style={{ width: '0%' }} />
-                    </div>
-                  )}
+                  <div className="w-full bg-zinc-800 rounded-full h-1.5">
+                    <div
+                      className={`h-1.5 rounded-full ${
+                        ramPercent > 80
+                          ? 'bg-red-500'
+                          : ramPercent > 60
+                          ? 'bg-yellow-500'
+                          : 'bg-blue-500'
+                      }`}
+                      style={{ width: `${Math.min(ramPercent, 100)}%` }}
+                    />
+                  </div>
                 </div>
               </CardContent>
             </Card>
@@ -1173,20 +1035,15 @@ export function BotStats() {
       )}
 
       {/* Dialog de Logs */}
-      <Dialog open={!!selectedBotForLogs} onOpenChange={(open) => {
-        if (!open) {
-          setSelectedBotForLogs(null)
-          setBotLogs('')
-        }
-      }}>
+      <Dialog open={!!selectedBotForLogs} onOpenChange={(open) => !open && setSelectedBotForLogs(null)}>
         <DialogContent className="bg-zinc-950 border-zinc-800 text-white max-w-4xl max-h-[80vh] flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Terminal className="h-5 w-5" />
-              Logs do Bot {selectedBotForLogs && bots.find(b => b.id === selectedBotForLogs)?.name || ''}
+              Logs do Bot
             </DialogTitle>
             <DialogDescription className="text-zinc-400">
-              Logs em tempo real da aplicação
+              {selectedBotForLogs && bots.find(b => b.id === selectedBotForLogs)?.name || 'Carregando...'}
             </DialogDescription>
           </DialogHeader>
           <div className="flex-1 min-h-0 flex flex-col">

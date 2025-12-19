@@ -129,6 +129,7 @@ export const api = {
           active: p.active,
           highlight: p.highlight || undefined,
           iconType: p.icon_type || undefined,
+          centralCartPackageId: p.central_cart_package_id || undefined,
         }))
       }
     } catch (e) {
@@ -165,6 +166,7 @@ export const api = {
         active: product.active !== undefined ? product.active : true,
         highlight: product.highlight || null,
         icon_type: product.iconType || null,
+        central_cart_package_id: product.centralCartPackageId || null,
         // created_at e updated_at são gerados automaticamente pelo banco
       }
 
@@ -206,6 +208,7 @@ export const api = {
         active: data.active,
         highlight: data.highlight || undefined,
         iconType: data.icon_type || undefined,
+        centralCartPackageId: data.central_cart_package_id || undefined,
       }
     } catch (e: any) {
       console.error('❌ Erro ao criar produto:', e)
@@ -249,6 +252,9 @@ export const api = {
       if (updates.active !== undefined) dbUpdates.active = updates.active
       if (updates.highlight !== undefined) dbUpdates.highlight = updates.highlight
       if (updates.iconType !== undefined) dbUpdates.icon_type = updates.iconType
+      if (updates.centralCartPackageId !== undefined) dbUpdates.central_cart_package_id = updates.centralCartPackageId || null
+      // Suporte para display_order (campo customizado)
+      if ((updates as any).display_order !== undefined) dbUpdates.display_order = (updates as any).display_order
 
       const { error } = await supabase
         .from('products')
@@ -495,7 +501,43 @@ export const api = {
       const dbUpdates: any = {}
       
       if (updates.status !== undefined) {
-        dbUpdates.status = updates.status
+        // GARANTIR que o status seja sempre um valor único válido
+        // Se vier concatenado (ex: "completed pending"), pegar apenas o primeiro valor válido
+        const statusValue = String(updates.status).trim()
+        
+        // Validar e normalizar o status
+        if (statusValue.includes(' ')) {
+          // Se tiver espaço, pegar apenas a primeira palavra válida
+          const firstStatus = statusValue.split(' ')[0].trim().toLowerCase()
+          if (firstStatus === 'completed' || firstStatus === 'pending' || firstStatus === 'failed') {
+            dbUpdates.status = firstStatus
+            console.warn(`⚠️ Status tinha múltiplos valores ("${statusValue}"), usando apenas: "${firstStatus}"`)
+          } else {
+            // Se a primeira palavra não for válida, tentar encontrar uma válida
+            const validStatuses = ['completed', 'pending', 'failed']
+            const foundStatus = validStatuses.find(s => statusValue.toLowerCase().includes(s))
+            if (foundStatus) {
+              dbUpdates.status = foundStatus
+              console.warn(`⚠️ Status inválido ("${statusValue}"), usando: "${foundStatus}"`)
+            } else {
+              console.error(`❌ Status inválido: "${statusValue}", mantendo status atual do pedido`)
+              // Não atualizar o status se for inválido
+              return
+            }
+          }
+        } else {
+          // Status único, validar se é um dos valores permitidos
+          const normalizedStatus = statusValue.toLowerCase()
+          if (normalizedStatus === 'completed' || normalizedStatus === 'pending' || normalizedStatus === 'failed') {
+            dbUpdates.status = normalizedStatus
+          } else {
+            console.error(`❌ Status inválido: "${statusValue}", valores permitidos: completed, pending, failed`)
+            // Não atualizar o status se for inválido
+            return
+          }
+        }
+        
+        console.log(`✅ Status validado e normalizado: "${dbUpdates.status}" (original: "${updates.status}")`)
       }
       if (updates.customerName !== undefined) {
         dbUpdates.customer_name = updates.customerName
@@ -561,32 +603,118 @@ export const api = {
         return
       }
 
-      console.log(`🔄 Atualizando pedido ${orderId} com:`, dbUpdates)
+      console.log(`🔄🔄🔄 ATUALIZANDO PEDIDO ${orderId} NO BANCO DE DADOS 🔄🔄🔄:`, dbUpdates)
+      console.log(`📋📋📋 STATUS SENDO ATUALIZADO: ${dbUpdates.status} 📋📋📋`)
 
-      // Atualizar o pedido diretamente (sem verificação prévia para evitar chamadas desnecessárias)
-      const { data, error } = await supabase
-        .from('orders')
-        .update(dbUpdates)
-        .eq('id', orderId)
-        .select()
+      // IMPORTANTE: Usar .update() com .select() e verificar se realmente atualizou
+      // Se não retornar dados, tentar novamente com uma abordagem diferente
+      let updateAttempts = 0
+      const maxAttempts = 3
+      let lastError: any = null
+      let updateSuccess = false
 
-      if (error) {
-        console.error(`❌ Erro ao atualizar pedido ${orderId}:`, error)
-        // Se o erro for "não encontrado", não lançar erro fatal
-        if (error.code === 'PGRST116') {
-          console.warn(`⚠️ Pedido ${orderId} não encontrado no banco de dados`)
-          return // Retornar silenciosamente se não encontrado
+      while (updateAttempts < maxAttempts && !updateSuccess) {
+        updateAttempts++
+        console.log(`🔄 Tentativa ${updateAttempts}/${maxAttempts} de atualizar pedido ${orderId}...`)
+
+        const { data, error } = await supabase
+          .from('orders')
+          .update(dbUpdates)
+          .eq('id', orderId)
+          .select()
+
+        if (error) {
+          console.error(`❌ Erro na tentativa ${updateAttempts}:`, error)
+          lastError = error
+          
+          // Se o erro for "não encontrado", não tentar novamente
+          if (error.code === 'PGRST116') {
+            console.warn(`⚠️ Pedido ${orderId} não encontrado no banco de dados`)
+            throw error
+          }
+          
+          // Se não for a última tentativa, aguardar um pouco e tentar novamente
+          if (updateAttempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 500))
+            continue
+          }
+          
+          throw error
         }
-        throw error
+
+        // Se retornou dados, verificar se o status foi realmente atualizado
+        if (data && data.length > 0) {
+          const updatedStatus = data[0].status
+          console.log(`✅ Dados retornados na tentativa ${updateAttempts}:`, {
+            id: data[0].id,
+            status: updatedStatus,
+            esperado: dbUpdates.status,
+            match: updatedStatus === dbUpdates.status,
+          })
+          
+          if (updatedStatus === dbUpdates.status) {
+            updateSuccess = true
+            console.log(`✅✅✅ PEDIDO ${orderId} ATUALIZADO COM SUCESSO NO BANCO DE DADOS ✅✅✅`)
+            console.log(`✅ Dados retornados do banco:`, {
+              id: data[0].id,
+              status: data[0].status,
+              payment_id: data[0].payment_id,
+            })
+            // Limpar cache do localStorage para forçar recarregamento do banco
+            localStorage.removeItem(STORAGE_ORDERS)
+            break
+          } else {
+            console.warn(`⚠️ Status não corresponde! Esperado: ${dbUpdates.status}, Retornado: ${updatedStatus}`)
+            if (updateAttempts < maxAttempts) {
+              await new Promise(resolve => setTimeout(resolve, 500))
+              continue
+            }
+          }
+        } else {
+          // Se não retornou dados, verificar diretamente no banco
+          console.log(`⚠️ Nenhum dado retornado na tentativa ${updateAttempts}, verificando diretamente no banco...`)
+          
+          // Aguardar um pouco para garantir que a atualização foi processada
+          await new Promise(resolve => setTimeout(resolve, 1000))
+          
+          // Verificar diretamente se foi atualizado
+          const { data: verifyData, error: verifyError } = await supabase
+            .from('orders')
+            .select('id, status')
+            .eq('id', orderId)
+            .single()
+          
+          if (!verifyError && verifyData) {
+            console.log(`🔍 Verificação direta:`, {
+              id: verifyData.id,
+              status: verifyData.status,
+              esperado: dbUpdates.status,
+              match: verifyData.status === dbUpdates.status,
+            })
+            
+            if (verifyData.status === dbUpdates.status) {
+              updateSuccess = true
+              console.log(`✅✅✅ PEDIDO ${orderId} ATUALIZADO COM SUCESSO (verificado diretamente) ✅✅✅`)
+              localStorage.removeItem(STORAGE_ORDERS)
+              break
+            } else {
+              console.warn(`⚠️ Status ainda não atualizado após verificação direta. Tentando novamente...`)
+              if (updateAttempts < maxAttempts) {
+                await new Promise(resolve => setTimeout(resolve, 1000))
+                continue
+              }
+            }
+          }
+        }
       }
 
-      // Verificar se a atualização foi bem-sucedida
-      if (data && data.length > 0) {
-        console.log(`✅ Pedido ${orderId} atualizado com sucesso`)
-        // Limpar cache do localStorage para forçar recarregamento do banco
-        localStorage.removeItem(STORAGE_ORDERS)
-      } else {
-        console.warn(`⚠️ Pedido ${orderId} não retornou dados após atualização`)
+      // Se todas as tentativas falharam, lançar erro
+      if (!updateSuccess) {
+        console.error(`❌❌❌ FALHA AO ATUALIZAR PEDIDO ${orderId} APÓS ${maxAttempts} TENTATIVAS ❌❌❌`)
+        if (lastError) {
+          throw lastError
+        }
+        throw new Error(`Não foi possível atualizar o pedido ${orderId} após ${maxAttempts} tentativas`)
       }
     } catch (e) {
       console.error('❌ Supabase update order failed', e)
@@ -701,6 +829,7 @@ export const api = {
           mercadoPagoAccessToken: data.mercado_pago_access_token?.trim() || data.mercado_pago_access_token, // Remover espaços
           livepixClientId: data.livepix_client_id,
           livepixClientSecret: data.livepix_client_secret,
+          centralCartApiToken: data.central_cart_api_token,
           additionalFee: data.additional_fee,
           // Notification settings
           discordSalesPublic: data.discord_sales_public ?? false,
@@ -718,6 +847,7 @@ export const api = {
           accessTokenLength: settings.mercadoPagoAccessToken?.length || 0,
           hasLivePixClientId: !!settings.livepixClientId,
           hasLivePixClientSecret: !!settings.livepixClientSecret,
+          hasCentralCartApiToken: !!settings.centralCartApiToken,
         })
         
         return settings
@@ -753,6 +883,7 @@ export const api = {
         accessTokenPrefix: settings.mercadoPagoAccessToken?.substring(0, 15) || 'N/A',
         hasLivePixClientId: !!settings.livepixClientId,
         hasLivePixClientSecret: !!settings.livepixClientSecret,
+        hasCentralCartApiToken: !!settings.centralCartApiToken,
       })
 
       const { data, error } = await supabase
@@ -770,6 +901,7 @@ export const api = {
             mercado_pago_access_token: settings.mercadoPagoAccessToken?.trim() || null,
             livepix_client_id: settings.livepixClientId || null,
             livepix_client_secret: settings.livepixClientSecret || null,
+            central_cart_api_token: settings.centralCartApiToken?.trim() || null,
             additional_fee: settings.additionalFee || false,
             // Notification settings
             discord_sales_public: settings.discordSalesPublic ?? false,

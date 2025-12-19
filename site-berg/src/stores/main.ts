@@ -45,6 +45,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const loadData = useCallback(async () => {
     setIsLoading(true)
     try {
+      // Limpar cache antes de recarregar para garantir dados atualizados do banco
+      try {
+        localStorage.removeItem('orders')
+      } catch (e) {
+        // Ignorar erro se localStorage não estiver disponível
+      }
+      
       const [fetchedProducts, fetchedOrders, fetchedVisits, fetchedSettings] =
         await Promise.all([
           api.getProducts().catch((err) => {
@@ -68,11 +75,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setOrders(fetchedOrders)
       setVisits(fetchedVisits)
       setSettings(fetchedSettings)
-      console.log('✅ Dados carregados com sucesso:', {
+      
+      // Calcular estatísticas para log
+      const approvedOrders = fetchedOrders.filter((o) => o.status === 'completed')
+      const pendingOrders = fetchedOrders.filter((o) => o.status === 'pending')
+      const failedOrders = fetchedOrders.filter((o) => o.status === 'failed')
+      
+      console.log('✅✅✅ DADOS CARREGADOS DO BANCO ✅✅✅:', {
         products: fetchedProducts.length,
         orders: fetchedOrders.length,
+        approvedOrders: approvedOrders.length,
+        pendingOrders: pendingOrders.length,
+        failedOrders: failedOrders.length,
         visits: fetchedVisits,
         hasSettings: !!fetchedSettings,
+      })
+      
+      // Log detalhado dos status dos pedidos
+      console.log('📊 Status dos pedidos:', {
+        completed: fetchedOrders.filter((o) => o.status === 'completed').map((o) => ({ id: o.id, status: o.status })),
+        pending: fetchedOrders.filter((o) => o.status === 'pending').map((o) => ({ id: o.id, status: o.status })),
+        failed: fetchedOrders.filter((o) => o.status === 'failed').map((o) => ({ id: o.id, status: o.status })),
       })
     } catch (error) {
       console.error('❌ Erro geral ao carregar dados:', error)
@@ -124,15 +147,62 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const updateOrder = useCallback(async (orderId: string, updates: Partial<Order>): Promise<void> => {
     try {
+      // VALIDAR STATUS ANTES DE ENVIAR - GARANTIR QUE NÃO VENHA CONCATENADO
+      if (updates.status !== undefined) {
+        const statusValue = String(updates.status).trim()
+        
+        // Se o status tiver espaço ou múltiplos valores, normalizar
+        if (statusValue.includes(' ')) {
+          const firstStatus = statusValue.split(' ')[0].trim().toLowerCase()
+          if (firstStatus === 'completed' || firstStatus === 'pending' || firstStatus === 'failed') {
+            updates.status = firstStatus as 'completed' | 'pending' | 'failed'
+            console.warn(`⚠️⚠️⚠️ STATUS CONCATENADO DETECTADO! Normalizando de "${statusValue}" para "${firstStatus}" ⚠️⚠️⚠️`)
+          } else {
+            console.error(`❌ Status inválido: "${statusValue}", não atualizando`)
+            throw new Error(`Status inválido: "${statusValue}"`)
+          }
+        } else {
+          const normalizedStatus = statusValue.toLowerCase()
+          if (normalizedStatus === 'completed' || normalizedStatus === 'pending' || normalizedStatus === 'failed') {
+            updates.status = normalizedStatus as 'completed' | 'pending' | 'failed'
+          } else {
+            console.error(`❌ Status inválido: "${statusValue}", não atualizando`)
+            throw new Error(`Status inválido: "${statusValue}"`)
+          }
+        }
+      }
+      
+      console.log(`🔄🔄🔄 updateOrder chamado para ${orderId} com:`, updates)
       await api.updateOrder(orderId, updates)
-      console.log(`✅ Pedido ${orderId} atualizado no banco de dados`)
+      console.log(`✅✅✅ Pedido ${orderId} atualizado no banco de dados com sucesso ✅✅✅`)
       
       // Atualizar apenas o pedido específico no estado local (não recarregar tudo)
-      setOrders((prev) =>
-        prev.map((o) => (o.id === orderId ? { ...o, ...updates } : o))
-      )
+      setOrders((prev) => {
+        const updated = prev.map((o) => {
+          if (o.id === orderId) {
+            const newOrder = { ...o, ...updates }
+            console.log(`🔄 Pedido atualizado no estado local:`, {
+              id: newOrder.id,
+              status: newOrder.status,
+              oldStatus: o.status,
+              isCompleted: newOrder.status === 'completed',
+            })
+            return newOrder
+          }
+          return o
+        })
+        
+        // Log de quantos pedidos estão completed após atualização
+        const completedCount = updated.filter((o) => o.status === 'completed').length
+        console.log(`📊📊📊 Total de pedidos completed após atualização: ${completedCount} de ${updated.length} 📊📊📊`)
+        
+        return updated
+      })
+      
+      console.log(`✅ Estado local atualizado para pedido ${orderId}`)
     } catch (error) {
-      console.error('❌ Erro ao atualizar pedido:', error)
+      console.error('❌❌❌ Erro ao atualizar pedido no store:', error)
+      console.error('❌ Detalhes do erro:', error)
       throw error
     }
   }, [])
@@ -155,13 +225,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  // Calculate Stats
+  // Calculate Stats - apenas pedidos completed contam como vendas
+  const approvedOrders = orders.filter((o) => o.status === 'completed')
+  
   const stats: DashboardStats = {
     totalVisits: visits,
-    totalSales: orders.length,
-    salesBotCount: orders.filter((o) => o.productId === 'sales-bot').length,
-    ticketBotCount: orders.filter((o) => o.productId === 'ticket-bot').length,
-    totalRevenue: orders.reduce((acc, curr) => acc + curr.amount, 0),
+    totalSales: approvedOrders.length,
+    salesBotCount: approvedOrders.filter((o) => o.productId === 'sales-bot').length,
+    ticketBotCount: approvedOrders.filter((o) => o.productId === 'ticket-bot').length,
+    totalRevenue: approvedOrders.reduce((acc, curr) => acc + curr.amount, 0),
   }
 
   const value = {

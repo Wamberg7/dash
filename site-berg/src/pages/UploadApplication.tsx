@@ -13,12 +13,15 @@ export default function UploadApplication() {
 
   return (
     <div className="min-h-screen bg-black text-foreground">
-      <AdminSidebar activeTab={activeTab} setActiveTab={setActiveTab} />
+      <AdminSidebar 
+        activeTab={activeTab} 
+        setActiveTab={setActiveTab}
+      />
 
-      <div className="pl-64 min-h-screen flex flex-col">
+      <div className="lg:pl-64 min-h-screen flex flex-col pb-20 lg:pb-0">
         <AdminHeader />
 
-        <main className="flex-1 p-8 space-y-8">
+        <main className="flex-1 p-4 md:p-8 space-y-8">
           <div className="space-y-1">
             <h1 className="text-3xl font-bold text-white tracking-tight">
               Enviar Aplicação

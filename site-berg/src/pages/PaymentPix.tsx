@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
-import { Copy, ScanLine, CheckCircle2, ArrowLeft, Loader2 } from 'lucide-react'
+import { Copy, ScanLine, CheckCircle2, ArrowLeft, Loader2, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -9,6 +9,7 @@ import { useAppStore } from '@/stores/main'
 import { Separator } from '@/components/ui/separator'
 import { getPaymentStatus } from '@/lib/mercadopago'
 import { getLivePixPaymentStatus } from '@/lib/livepix'
+import { getCentralCartPaymentStatus } from '@/lib/centralcart'
 import { api } from '@/lib/api'
 import { getApiUrl } from '@/lib/api-config'
 
@@ -24,6 +25,7 @@ export default function PaymentPix() {
   const [paymentId, setPaymentId] = useState<string | null>(null)
   const [paymentStatus, setPaymentStatus] = useState<string | null>(null)
   const [isRedirecting, setIsRedirecting] = useState(false)
+  const [isCheckingPayment, setIsCheckingPayment] = useState(false)
   const { orders, settings, updateOrder, refreshData } = useAppStore()
 
   // Buscar dados do pagamento Pix
@@ -34,6 +36,76 @@ export default function PaymentPix() {
         const paymentIdFromUrl = searchParams.get('payment_id')
         const gateway = searchParams.get('gateway') || settings?.paymentGateway || 'MercadoPago'
 
+        setPaymentId(paymentIdFromUrl)
+
+        // CentralCart - buscar dados do localStorage ou da API
+        if (gateway === 'CentralCart' || gateway === 'centralcart') {
+          // Tentar buscar do localStorage primeiro
+          const storedPixData = localStorage.getItem(`pix_payment_${orderId}`)
+          if (storedPixData) {
+            try {
+              const pixData = JSON.parse(storedPixData)
+              if (pixData.qr_code_base64) {
+                setPixQrCode(pixData.qr_code_base64)
+              }
+              if (pixData.pix_code) {
+                setPixCode(pixData.pix_code)
+              }
+              if (pixData.payment_id) {
+                setPaymentId(pixData.payment_id)
+              }
+              setIsLoading(false)
+              console.log('✅ Dados PIX carregados do localStorage')
+              return
+            } catch (error) {
+              console.error('Erro ao ler dados do localStorage:', error)
+            }
+          }
+
+          // Se não tiver no localStorage, tentar buscar da API
+          // Primeiro tentar buscar o paymentId do pedido
+          if (orderId && settings?.centralCartApiToken) {
+            try {
+              const orders = await api.getOrders()
+              const currentOrder = orders.find(o => o.id === orderId)
+              const checkoutId = currentOrder?.paymentId
+              
+              // Usar paymentId da URL ou do pedido
+              const idToUse = paymentIdFromUrl || checkoutId
+              
+              if (idToUse) {
+                const paymentStatus = await getCentralCartPaymentStatus(
+                  settings.centralCartApiToken,
+                  idToUse,
+                  checkoutId,
+                  orderId
+                )
+                
+                if (paymentStatus.qr_code_base64) {
+                  setPixQrCode(paymentStatus.qr_code_base64)
+                }
+                if (paymentStatus.pix_code) {
+                  setPixCode(paymentStatus.pix_code)
+                }
+                setPaymentStatus(paymentStatus.status)
+                
+                // Atualizar paymentId se não estava definido
+                if (!paymentIdFromUrl && checkoutId) {
+                  setPaymentId(checkoutId)
+                }
+              } else {
+                console.warn('⚠️ Nenhum ID disponível para buscar status do pagamento CentralCart')
+              }
+            } catch (error: any) {
+              console.error('Erro ao buscar status do pagamento CentralCart:', error)
+              // Não mostrar toast de erro aqui, apenas log
+            }
+          }
+
+          setIsLoading(false)
+          return
+        }
+
         if (!paymentIdFromUrl) {
           toast({
             title: 'Erro',
@@ -43,8 +115,6 @@ export default function PaymentPix() {
           setIsLoading(false)
           return
         }
-
-        setPaymentId(paymentIdFromUrl)
 
         if (gateway === 'LivePix') {
           // Processar com LivePix
@@ -132,6 +202,10 @@ export default function PaymentPix() {
     // Verificar se tem as credenciais necessárias
     if (gateway === 'LivePix') {
       if (!paymentId || !settings?.livepixClientId || !settings?.livepixClientSecret || !orderId || isRedirecting) return
+    } else if (gateway === 'CentralCart' || gateway === 'centralcart') {
+      // Para CentralCart, precisamos pelo menos do orderId e do token
+      // O paymentId pode vir do pedido se não estiver na URL
+      if (!settings?.centralCartApiToken || !orderId || isRedirecting) return
     } else {
       if (!paymentId || !settings?.mercadoPagoAccessToken || !orderId || isRedirecting) return
     }
@@ -148,6 +222,96 @@ export default function PaymentPix() {
             paymentId!
           )
           currentStatus = payment.status
+        } else if (gateway === 'CentralCart' || gateway === 'centralcart') {
+          // Buscar orderId para usar como fallback se paymentId não funcionar
+          let checkoutId: string | undefined
+          let customerEmail: string | undefined
+          try {
+            const orders = await api.getOrders()
+            const currentOrder = orders.find(o => o.id === orderId)
+            checkoutId = currentOrder?.paymentId
+            customerEmail = currentOrder?.customerEmail
+          } catch (err) {
+            console.warn('Erro ao buscar pedidos:', err)
+          }
+          
+          // Usar paymentId da URL, ou do pedido, ou orderId como último recurso
+          const idToCheck = paymentId || checkoutId || orderId
+          
+          console.log('🔍 Verificando status CentralCart:', {
+            paymentIdFromUrl: paymentId,
+            paymentIdFromOrder: checkoutId,
+            orderId,
+            customerEmail,
+            idToCheck,
+          })
+          
+          payment = await getCentralCartPaymentStatus(
+            settings!.centralCartApiToken!,
+            idToCheck || '',
+            checkoutId,
+            orderId || undefined,
+            customerEmail
+          )
+          currentStatus = payment.status
+          
+          console.log('📊 Status retornado da CentralCart:', {
+            status: currentStatus,
+            isApproved: currentStatus === 'approved',
+            payment,
+          })
+          
+          // Se encontrou checkout_id na resposta, salvar no pedido
+          if (payment.checkout_id && !checkoutId && orderId) {
+            try {
+              await updateOrder(orderId, { paymentId: payment.checkout_id })
+              console.log(`✅ Checkout ID salvo no pedido: ${payment.checkout_id}`)
+            } catch (err) {
+              console.warn('Erro ao salvar checkout_id:', err)
+            }
+          }
+          
+          // Se o status for approved, atualizar o pedido imediatamente
+          if (currentStatus === 'approved' && orderId) {
+            console.log('🚀 Status é APPROVED! Atualizando pedido agora...')
+            console.log('🚀 Dados antes da atualização:', {
+              orderId,
+              currentStatus,
+              paymentStatus: payment.status,
+            })
+            try {
+              console.log('🔄 Chamando updateOrder com status: completed')
+              await updateOrder(orderId, { status: 'completed' })
+              console.log('✅ updateOrder concluído, recarregando dados...')
+              
+              // Aguardar um pouco para garantir que a atualização foi persistida
+              await new Promise(resolve => setTimeout(resolve, 500))
+              
+              await refreshData()
+              console.log('✅ Pedido atualizado para completed e dados recarregados!')
+              
+              // Verificar se realmente foi atualizado
+              const ordersAfter = await api.getOrders()
+              const updatedOrder = ordersAfter.find(o => o.id === orderId)
+              console.log('🔍 Verificação pós-atualização:', {
+                orderId,
+                statusNoBanco: updatedOrder?.status,
+                foiAtualizado: updatedOrder?.status === 'completed',
+              })
+            } catch (err: any) {
+              console.error('❌ Erro ao atualizar pedido:', err)
+              console.error('❌ Detalhes do erro:', {
+                message: err?.message,
+                stack: err?.stack,
+                error: err,
+              })
+              toast({
+                title: 'Erro ao atualizar pedido',
+                description: err?.message || 'Não foi possível atualizar o status do pedido.',
+                variant: 'destructive',
+              })
+            }
+          }
         } else {
           payment = await getPaymentStatus(
             settings!.mercadoPagoAccessToken!,
@@ -157,6 +321,13 @@ export default function PaymentPix() {
         }
 
         setPaymentStatus(currentStatus)
+        
+        // Log importante para debug
+        console.log('🔔 Status atualizado no estado:', {
+          currentStatus,
+          isApproved: currentStatus === 'approved',
+          gateway,
+        })
 
         console.log('Status do pagamento verificado:', {
           paymentId,
@@ -164,10 +335,18 @@ export default function PaymentPix() {
           orderId,
         })
 
-        // Mapear status do LivePix para o formato esperado
+        // Mapear status para o formato esperado
         const isApproved = gateway === 'LivePix' 
           ? (currentStatus === 'paid' || currentStatus === 'approved')
+          : gateway === 'CentralCart' || gateway === 'centralcart'
+          ? (currentStatus === 'approved' || currentStatus === 'paid')
           : (currentStatus === 'approved')
+        
+        console.log('✅ Verificação de aprovação:', {
+          gateway,
+          currentStatus,
+          isApproved,
+        })
 
         if (isApproved) {
           // Prevenir múltiplos redirecionamentos
@@ -239,8 +418,12 @@ export default function PaymentPix() {
             }
             
             // Processamento normal de pedido
+            console.log('🔄 Atualizando pedido para completed:', orderId)
             await updateOrder(orderId, { status: 'completed' })
-            console.log('Pedido atualizado para completed:', orderId)
+            console.log('✅ Pedido atualizado para completed:', orderId)
+            
+            // Recarregar dados imediatamente para garantir sincronização
+            await refreshData()
             
             // Aguardar um pouco para garantir que a atualização foi persistida
             await new Promise(resolve => setTimeout(resolve, 800))
@@ -379,9 +562,120 @@ export default function PaymentPix() {
               Use a câmera do seu celular para escanear o QR Code.
             </p>
             {paymentStatus && paymentStatus !== 'approved' && (
-              <p className="text-yellow-400 text-xs mt-2">
+              <div className="flex flex-col items-center gap-2 mt-2">
+                <p className="text-yellow-400 text-xs">
                 Status: {paymentStatus === 'pending' ? 'Aguardando pagamento' : paymentStatus === 'in_process' ? 'Processando...' : paymentStatus}
               </p>
+                {settings?.paymentGateway === 'CentralCart' && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      setIsCheckingPayment(true)
+                      try {
+                        const gateway = searchParams.get('gateway') || settings?.paymentGateway || 'MercadoPago'
+                        
+                        if (gateway === 'CentralCart' || gateway === 'centralcart') {
+                          // Buscar pedido local para obter email
+                          const currentOrder = orders.find(o => o.id === orderId)
+                          const customerEmail = currentOrder?.customerEmail
+                          
+                          if (!settings?.centralCartApiToken) {
+                            toast({
+                              title: 'Erro',
+                              description: 'Token da API da CentralCart não configurado.',
+                              variant: 'destructive',
+                            })
+                            return
+                          }
+                          
+                          if (!customerEmail) {
+                            toast({
+                              title: 'Erro',
+                              description: 'Email do cliente não encontrado no pedido.',
+                              variant: 'destructive',
+                            })
+                            return
+                          }
+                          
+                          console.log('🔍 Verificação manual do pagamento CentralCart:', {
+                            orderId,
+                            customerEmail,
+                          })
+                          
+                          // Buscar status diretamente na API da CentralCart
+                          const payment = await getCentralCartPaymentStatus(
+                            settings.centralCartApiToken,
+                            '', // Sem ID, vai buscar pela lista de pedidos
+                            undefined,
+                            undefined,
+                            customerEmail
+                          )
+                          
+                          console.log('📊 Status retornado da verificação manual:', payment)
+                          
+                          setPaymentStatus(payment.status)
+                          
+                          // Se encontrou checkout_id, salvar no pedido
+                          if (payment.checkout_id && orderId) {
+                            try {
+                              await updateOrder(orderId, { paymentId: payment.checkout_id })
+                              console.log(`✅ Checkout ID salvo: ${payment.checkout_id}`)
+                            } catch (err) {
+                              console.warn('Erro ao salvar checkout_id:', err)
+                            }
+                          }
+                          
+                          // Se aprovado, atualizar pedido
+                          if (payment.status === 'approved' && orderId) {
+                            try {
+                              await updateOrder(orderId, { status: 'completed' })
+                              await refreshData()
+                              toast({
+                                title: 'Pagamento aprovado!',
+                                description: 'Seu pagamento foi confirmado.',
+                              })
+                              setTimeout(() => {
+                                navigate(`/bot-setup/${orderId}`, { replace: true })
+                              }, 1500)
+                            } catch (err) {
+                              console.error('Erro ao atualizar pedido:', err)
+                            }
+                          } else {
+                            toast({
+                              title: 'Status verificado',
+                              description: `Status atual: ${payment.status === 'pending' ? 'Aguardando pagamento' : payment.status}`,
+                            })
+                          }
+                        }
+                      } catch (error: any) {
+                        console.error('Erro ao verificar pagamento:', error)
+                        toast({
+                          title: 'Erro ao verificar pagamento',
+                          description: error.message || 'Não foi possível verificar o status do pagamento.',
+                          variant: 'destructive',
+                        })
+                      } finally {
+                        setIsCheckingPayment(false)
+                      }
+                    }}
+                    disabled={isCheckingPayment}
+                    className="text-xs h-7"
+                  >
+                    {isCheckingPayment ? (
+                      <>
+                        <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+                        Verificando...
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="mr-2 h-3 w-3" />
+                        Verificar Pagamento
+                      </>
+                    )}
+                  </Button>
+                )}
+              </div>
             )}
             {paymentStatus === 'approved' && (
               <p className="text-green-400 text-xs mt-2 font-semibold">

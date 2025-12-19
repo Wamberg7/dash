@@ -7,6 +7,7 @@ export interface Product {
   active: boolean
   highlight?: string
   iconType?: 'shopping-cart' | 'bot'
+  centralCartPackageId?: number // ID do produto na CentralCart
 }
 
 export interface Order {
@@ -66,6 +67,8 @@ export interface CheckoutSettings {
   // LivePix specific
   livepixClientId?: string
   livepixClientSecret?: string
+  // CentralCart specific
+  centralCartApiToken?: string
   // Taxa adicional
   additionalFee?: boolean
   // Notification settings

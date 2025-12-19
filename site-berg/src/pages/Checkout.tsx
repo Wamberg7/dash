@@ -38,6 +38,7 @@ import { useAuth } from '@/stores/auth'
 import { Skeleton } from '@/components/ui/skeleton'
 import { createMercadoPagoPreference, createPixPayment, validateAccessToken } from '@/lib/mercadopago'
 import { createLivePixPayment } from '@/lib/livepix'
+import { createCentralCartCheckout } from '@/lib/centralcart'
 
 const formSchema = z
   .object({
@@ -111,6 +112,8 @@ export default function Checkout() {
 
   // Determinar método de pagamento padrão baseado nas configurações
   const getDefaultPaymentMethod = () => {
+    // CentralCart só suporta PIX
+    if (settings?.paymentGateway === 'CentralCart') return 'pix'
     if (settings?.enablePix !== false) return 'pix'
     if (settings?.enableCreditCard !== false) return 'credit_card'
     return 'pix' // Fallback
@@ -132,7 +135,10 @@ export default function Checkout() {
   useEffect(() => {
     if (settings) {
       const newDefault = getDefaultPaymentMethod()
-      if (form.getValues('paymentMethod') !== newDefault) {
+      // Se for CentralCart, sempre forçar PIX
+      if (settings.paymentGateway === 'CentralCart') {
+        form.setValue('paymentMethod', 'pix')
+      } else if (form.getValues('paymentMethod') !== newDefault) {
         form.setValue('paymentMethod', newDefault)
       }
     }
@@ -314,6 +320,191 @@ export default function Checkout() {
           }
           return
         }
+      } else if (settings?.paymentGateway === 'CentralCart') {
+        // Processar com CentralCart
+        if (!settings?.centralCartApiToken) {
+          toast({
+            title: 'Configuração incompleta',
+            description: 'Token da API da CentralCart não configurado. Configure nas Configurações.',
+            variant: 'destructive',
+          })
+          setIsProcessing(false)
+          return
+        }
+
+        // Verificar se o produto tem package_id da CentralCart
+        if (!selectedProduct.centralCartPackageId || selectedProduct.centralCartPackageId <= 0) {
+          toast({
+            title: 'Produto não vinculado',
+            description: 'Este produto não está vinculado a um produto na CentralCart. Configure o Package ID do produto nas configurações do produto.',
+            variant: 'destructive',
+          })
+          setIsProcessing(false)
+          return
+        }
+
+        console.log('Dados do checkout CentralCart:', {
+          productId: selectedProduct.id,
+          productName: selectedProduct.title,
+          packageId: selectedProduct.centralCartPackageId,
+          email: values.email,
+          name: values.name,
+        })
+
+        console.log('Iniciando checkout CentralCart...', {
+          product: selectedProduct.title,
+          packageId: selectedProduct.centralCartPackageId,
+          email: values.email,
+          name: values.name,
+        })
+
+        // CentralCart só suporta PIX
+        if (values.paymentMethod !== 'pix') {
+          toast({
+            title: 'Método não suportado',
+            description: 'CentralCart suporta apenas pagamentos via PIX. Por favor, selecione PIX como método de pagamento.',
+            variant: 'destructive',
+          })
+          setIsProcessing(false)
+          return
+        }
+
+        // CentralCart sempre usa PIX
+        const gateway: 'PIX' = 'PIX'
+
+        // Criar pedido ANTES de criar o checkout para ter o orderId
+        let orderId = null
+        if (!isUpgrade) {
+          const newOrder = await createOrder({
+            customerName: values.name,
+            customerEmail: values.email,
+            productId: selectedProduct.id,
+            productName: selectedProduct.title,
+            amount: selectedProduct.price,
+            status: 'pending',
+            paymentMethod: values.paymentMethod === 'pix' ? 'pix' : 'credit_card',
+            userId: user.userId || user.id,
+          })
+          orderId = newOrder.id
+        } else {
+          orderId = upgradeOrderId
+        }
+
+        // Criar checkout na CentralCart
+        const checkoutResult = await createCentralCartCheckout(
+          settings.centralCartApiToken,
+          {
+            gateway: gateway,
+            client_email: values.email,
+            client_name: values.name,
+            client_discord: user?.id ? `${user.username}#${user.discriminator || '0'}` : undefined,
+            cart: [
+              {
+                package_id: selectedProduct.centralCartPackageId,
+                quantity: 1,
+              },
+            ],
+            terms: true,
+          }
+        )
+
+        if (!checkoutResult.success) {
+          throw new Error(checkoutResult.error || 'Erro ao criar checkout na CentralCart')
+        }
+
+        console.log('✅ Checkout CentralCart criado com sucesso:', {
+          checkout_id: checkoutResult.checkout_id,
+          payment_id: checkoutResult.payment_id,
+          hasCheckoutUrl: !!checkoutResult.checkout_url,
+          hasQrCode: !!checkoutResult.qr_code_base64,
+          hasPixCode: !!checkoutResult.pix_code,
+          checkout_url: checkoutResult.checkout_url,
+        })
+
+        // Atualizar pedido com o internal_id da CentralCart (que é o identificador principal)
+        // IMPORTANTE: A CentralCart usa internal_id como identificador único do pedido
+        const centralCartOrderId = checkoutResult.payment_id || checkoutResult.checkout_id
+        
+        if (centralCartOrderId && !isUpgrade && orderId) {
+          try {
+            await updateOrder(orderId, { paymentId: centralCartOrderId })
+            console.log(`✅ Pedido ${orderId} atualizado com payment_id (internal_id da CentralCart): ${centralCartOrderId}`)
+            console.log('📋 Dados do checkout CentralCart:', {
+              internal_id: centralCartOrderId,
+              checkout_id: checkoutResult.checkout_id,
+              payment_id: checkoutResult.payment_id,
+              saved_as: centralCartOrderId,
+            })
+          } catch (err) {
+            console.error('Erro ao atualizar pedido com payment_id:', err)
+          }
+        } else {
+          console.warn('⚠️ Não foi possível salvar payment_id (internal_id da CentralCart):', {
+            centralCartOrderId,
+            isUpgrade,
+            orderId,
+            checkoutResult,
+          })
+          
+          // Se não conseguiu salvar, tentar buscar o pedido na CentralCart pelo email
+          if (!centralCartOrderId && !isUpgrade && orderId) {
+            console.log('🔄 Tentando buscar internal_id da CentralCart pela lista de pedidos...')
+            try {
+              const { getCentralCartPaymentStatus } = await import('@/lib/centralcart')
+              const paymentStatus = await getCentralCartPaymentStatus(
+                settings.centralCartApiToken!,
+                '',
+                undefined,
+                orderId,
+                values.email
+              )
+              
+              if (paymentStatus.checkout_id) {
+                await updateOrder(orderId, { paymentId: paymentStatus.checkout_id })
+                console.log(`✅ Internal_id encontrado e salvo: ${paymentStatus.checkout_id}`)
+              }
+            } catch (err) {
+              console.warn('⚠️ Não foi possível buscar internal_id da CentralCart:', err)
+            }
+          }
+        }
+
+        // Se tiver QR Code e código PIX, processar pagamento interno
+        if (checkoutResult.qr_code_base64 || checkoutResult.pix_code) {
+          // Salvar dados do PIX no localStorage para a página de pagamento
+          const pixData = {
+            qr_code_base64: checkoutResult.qr_code_base64,
+            pix_code: checkoutResult.pix_code || checkoutResult.copy_paste,
+            payment_id: centralCartOrderId,
+            gateway: 'CentralCart',
+            order_id: orderId,
+          }
+          localStorage.setItem(`pix_payment_${orderId}`, JSON.stringify(pixData))
+
+          console.log('✅ Pagamento PIX criado, redirecionando para página de pagamento interno')
+          
+          // Redirecionar para página de pagamento PIX
+          navigate(`/payment/pix/${orderId}?payment_id=${centralCartOrderId}&gateway=centralcart`)
+          return
+        }
+
+        // Se não tiver QR Code mas tiver checkout_url, avisar que será redirecionamento externo
+        if (checkoutResult.checkout_url) {
+          console.warn('⚠️ CentralCart retornou apenas checkout_url. Redirecionando para página externa.')
+          
+          toast({
+            title: 'Redirecionando para pagamento',
+            description: 'Você será redirecionado para a página de pagamento da CentralCart.',
+          })
+          
+          // Pequeno delay para mostrar a mensagem
+          setTimeout(() => {
+            window.location.href = checkoutResult.checkout_url!
+          }, 1000)
+          return
+        }
+
+        throw new Error('Nenhum dado de pagamento foi retornado pela CentralCart')
       } else if (settings?.paymentGateway === 'MercadoPago') {
         // Verificar se tem Access Token (obrigatório para processar pagamentos)
         if (!settings?.mercadoPagoAccessToken) {
@@ -645,8 +836,31 @@ export default function Checkout() {
                                 <RadioGroup
                                   onValueChange={field.onChange}
                                   defaultValue={field.value}
+                                  value={settings?.paymentGateway === 'CentralCart' ? 'pix' : field.value}
                                   className="flex flex-col space-y-1"
                                 >
+                                  {/* CentralCart só mostra PIX */}
+                                  {settings?.paymentGateway === 'CentralCart' ? (
+                                    <FormItem className={`flex items-center space-x-3 space-y-0 rounded-md border p-4 transition-colors border-green-500 bg-green-500/10`}>
+                                      <FormControl>
+                                        <RadioGroupItem 
+                                          value="pix" 
+                                          disabled={true}
+                                          className="border-green-500 text-green-500 data-[state=checked]:text-green-500"
+                                        />
+                                      </FormControl>
+                                      <div className="flex-1 flex items-center justify-between">
+                                        <FormLabel className="font-normal cursor-pointer flex items-center gap-2 text-zinc-200">
+                                          <QrCode className="w-4 h-4" />
+                                          Pix (CentralCart)
+                                        </FormLabel>
+                                        <span className="text-xs bg-green-500/10 text-green-500 px-2 py-1 rounded font-medium">
+                                          Aprovação Imediata
+                                        </span>
+                                      </div>
+                                    </FormItem>
+                                  ) : (
+                                    <>
                                   {settings?.enableCreditCard !== false && (
                                     <FormItem className={`flex items-center space-x-3 space-y-0 rounded-md border p-4 transition-colors ${
                                       paymentMethod === 'credit_card' 
@@ -689,6 +903,8 @@ export default function Checkout() {
                                         </span>
                                       </div>
                                     </FormItem>
+                                      )}
+                                    </>
                                   )}
                                 </RadioGroup>
                               </FormControl>

@@ -6,7 +6,6 @@ import { BotStats } from '@/components/admin/BotStats'
 import { BotSettingsForm } from '@/components/admin/BotSettingsForm'
 import { BotActivityLog } from '@/components/admin/BotActivityLog'
 import { SquareCloudUpload } from '@/components/admin/SquareCloudUpload'
-import { BotLogsViewer } from '@/components/admin/BotLogsViewer'
 import { ProductManager } from '@/components/admin/ProductManager'
 import { OrderList } from '@/components/admin/OrderList'
 import { SettingsForm } from '@/components/admin/SettingsForm'
@@ -17,25 +16,27 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-black text-foreground">
-      <AdminSidebar activeTab={activeTab} setActiveTab={setActiveTab} />
+      <AdminSidebar 
+        activeTab={activeTab} 
+        setActiveTab={setActiveTab}
+      />
 
-      <div className="pl-64 min-h-screen flex flex-col">
+      <div className="lg:pl-64 min-h-screen flex flex-col pb-20 lg:pb-0">
         <AdminHeader />
 
-        <main className="flex-1 p-8 space-y-8">
+        <main className="flex-1 p-4 md:p-6 lg:p-8 space-y-4 md:space-y-6 lg:space-y-8">
           <div className="space-y-1">
-            <h1 className="text-3xl font-bold text-white tracking-tight">
+            <h1 className="text-2xl md:text-3xl font-bold text-white tracking-tight">
               {activeTab === 'overview' && 'Visão Geral'}
               {activeTab === 'products' && 'Produtos'}
               {activeTab === 'orders' && 'Pedidos'}
-              {activeTab === 'payment' && 'Configuração de Pagamento'}
+              {activeTab === 'payment' && 'Gateway'}
               {activeTab === 'bots' && 'Estatísticas dos Bots'}
               {activeTab === 'upload' && 'Enviar Aplicação'}
-              {activeTab === 'logs' && 'Logs do Bot'}
               {activeTab === 'bot' && 'Configurações do Bot'}
               {activeTab === 'activity' && 'Registro de Atividades'}
             </h1>
-            <p className="text-zinc-400">
+            <p className="text-sm md:text-base text-zinc-400">
               {activeTab === 'overview' &&
                 'Acompanhe o desempenho da sua loja em tempo real.'}
               {activeTab === 'products' &&
@@ -48,8 +49,6 @@ export default function Dashboard() {
                 'Visualize informações e estatísticas em tempo real dos seus bots na SquareCloud.'}
               {activeTab === 'upload' &&
                 'Faça upload de um arquivo ZIP com seu projeto para hospedar na SquareCloud.'}
-              {activeTab === 'logs' &&
-                'Visualize os logs em tempo real dos seus bots hospedados na SquareCloud.'}
               {activeTab === 'bot' &&
                 'Configure o token da API da SquareCloud e outras configurações do bot.'}
               {activeTab === 'activity' &&
@@ -81,10 +80,6 @@ export default function Dashboard() {
 
             <TabsContent value="upload" className="mt-0">
               <SquareCloudUpload />
-            </TabsContent>
-
-            <TabsContent value="logs" className="mt-0">
-              <BotLogsViewer />
             </TabsContent>
 
             <TabsContent value="bot" className="mt-0">

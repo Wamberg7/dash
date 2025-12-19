@@ -209,9 +209,9 @@ export function BotSettingsForm() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="grid gap-4 md:gap-6 grid-cols-1 lg:grid-cols-2">
       <Card className="bg-zinc-950 border-zinc-800">
-        <CardHeader>
+        <CardHeader className="px-4 md:px-6 pt-4 md:pt-6">
           <CardTitle className="text-white flex items-center gap-2">
             <Settings className="w-5 h-5" />
             Configurações da SquareCloud
@@ -220,7 +220,7 @@ export function BotSettingsForm() {
             Configure o token da API da SquareCloud para gerenciar seus bots.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="px-4 md:px-6 pb-4 md:pb-6 space-y-4">
           <div className="space-y-2">
             <Label htmlFor="squarecloud-token" className="text-white">
               Token da API SquareCloud
@@ -281,7 +281,7 @@ export function BotSettingsForm() {
 
       {/* Campo para adicionar ID da aplicação */}
       <Card className="bg-zinc-950 border-zinc-800">
-        <CardHeader>
+        <CardHeader className="px-4 md:px-6 pt-4 md:pt-6">
           <CardTitle className="text-white flex items-center gap-2">
             <Plus className="w-5 h-5" />
             Adicionar Aplicação
@@ -290,7 +290,7 @@ export function BotSettingsForm() {
             Adicione o ID da aplicação da SquareCloud para visualizar suas estatísticas.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent className="px-4 md:px-6 pb-4 md:pb-6 space-y-4">
           <div className="space-y-2">
             <Label htmlFor="app-id" className="text-white">
               ID da Aplicação
